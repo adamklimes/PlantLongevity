@@ -1,0 +1,331 @@
+## data_analyses
+library(ape)
+library(phylolm)
+
+## loading_data
+dat <- read.csv("data/dicots_agegrowth_ladakh.csv")
+tree <- read.tree("data/kveten.completissimo.tre")
+
+## data_preparation
+dat$Growth_form[dat$Growth_form == "Annuals"] <- "Monocarpic"
+tree$tip.label[tree$tip.label == "Astragalustecti-mundi"] <- 
+  "Astragalus_tectimundi"
+tree$tip.label[tree$tip.label == "Saxifraga_prorepens"] <- "Saxifraga_hirculus" 
+# missing species: "Braya_humilis"   "Gentiana_azurea"
+dat$Habitat <- factor(dat$Habitat)
+dat$Growth_form <- factor(dat$Growth_form)
+s_dat <- dat[dat$Species %in% tree$tip.label, ]
+s_tree <- keep.tip(tree, s_dat$Species)
+rownames(s_dat) <- s_dat$Species
+sc_dat <- s_dat[apply(!is.na(s_dat), 1, all), ]
+sc_tree <- keep.tip(tree, sc_dat$Species)
+
+mod_select <- function(mod, keep_terms = NULL){
+  aux_update <- function(x, mod, aic = TRUE) { 
+    res <- update(mod, terms(mod$formula)[x])
+    if (aic) res <- c(AIC(res), res$adj.r.squared, res$optpar)
+    res
+  }
+  n <- length(all.vars(mod$formula)) - 1
+  mat <- data.frame(matrix(c(TRUE, FALSE), nrow = 2, ncol = n))
+  mat_e <- expand.grid(mat)
+  mat_e[, keep_terms] <- TRUE
+  mat_ec <- mat_e[!duplicated(apply(mat_e, 1, paste, collapse = "")), ]
+  if (nrow(mat_ec) > 10) 
+    print(paste("Beware! There are", nrow(mat_ec), "updates."))
+  mods_aic <- t(apply(mat_ec, 1, aux_update, mod))
+  rownames(mods_aic) <- apply(mat_ec, 1, 
+    function(x) paste(which(x), collapse = " "))
+  mods_aic <- mods_aic[order(mods_aic[, 1]), ]
+  aux_ts <- unlist(strsplit(rownames(mods_aic)[1], " "))
+  aux_ts <- if (all(aux_ts == "")) NULL else as.numeric(aux_ts)
+  mod_sel <- aux_update(aux_ts, mod, aic = FALSE)
+  mods_aic[, 1] <- mods_aic[, 1] - mods_aic[1, 1]
+  colnames(mods_aic) <- c("dAIC", "AdjR2", "Lambda")
+  list(dAIC = mods_aic, mod_sel = mod_sel)
+}
+
+## analyses
+# habitat preferences - Moisture, Habitat, Elevation_optima, 
+#   Elevation_range, Stability
+# height and growth form - Growth_form, Plant_height
+# functional traits - Bark_xylem_ratio, Mechanical_tissue, Storage_tissue, 
+#  (Conductive_tissue), LNC, LPC, RNC, RPC, d15N, 
+#  d13C, LCC
+
+mod1 <- phylolm(log(Longevity) ~ Moisture + Habitat + Elevation_optima + 
+  Elevation_range + Stability, 
+  data = sc_dat, phy = sc_tree, model = "lambda")
+mod_sel1 <- mod_select(mod1)
+# summary(mod_sel1$mod)
+
+mod2 <- phylolm(log(Longevity) ~ Habitat + Growth_form + sqrt(Plant_height), 
+  data = sc_dat, phy = sc_tree, model = "lambda")
+mod_sel2 <- mod_select(mod2, 1)
+# summary(mod_sel2$mod)
+
+mod3 <- phylolm(log(Longevity) ~ Habitat + Growth_form + 
+  sqrt(Bark_xylem_ratio) + sqrt(Mechanical_tissue) + Storage_tissue +  
+  log(LNC) + log(LPC) + log(RNC) + log(RPC) + d15N + d13C + log(LCC) + log(Growth), 
+  data = sc_dat, phy = sc_tree, model = "lambda")
+mod_sel3 <- mod_select(mod3, 1:2)
+# save(mod_sel3, file = "data/analyses/mod_longevity.RData")
+load("data/analyses/mod_longevity.RData")
+summary(mod_sel3$mod)
+
+# grepl("1 2 3 13", names(mod_sel$dAIC))
+
+# phylosig
+phylosig_fn <- function(trait){
+  form <- formula(paste0(trait, " ~ 1"))
+  round(phylolm(form, data = sc_dat, phy = sc_tree, model = "lambda")$optpar, 2)
+}
+traits <- c("sqrt(Bark_xylem_ratio)", "sqrt(Mechanical_tissue)","Storage_tissue","log(LNC)","log(LPC)","log(RNC)","log(RPC)","d15N","d13C","log(LCC)","log(Growth)")
+t(t(sapply(traits, phylosig_fn)))
+
+## tables
+# table S1 - selected models
+prep_tab <- function(mod_sel, mod) {
+  mod_term <- attr(terms(mod$formula), "term.labels")
+  aux_fn <- function(x, y) {
+    paste(y[as.numeric(x)], collapse = "_+_")
+  }
+  tab_names <- vapply(strsplit(rownames(mod_sel$dAIC), " "), aux_fn, mod_term, FUN.VALUE = "aa")
+  data.frame(terms = tab_names,
+    round(mod_sel$dAIC, 3), row.names = NULL)
+}
+
+rbind(prep_tab(mod_sel1, mod1)[1:4, ],
+  prep_tab(mod_sel2, mod2)[1:4, ],
+  prep_tab(mod_sel3, mod3)[1:4, ])
+
+## figures
+centr <- function(x) x - mean(x)
+recalc_int <- function(cfs, svar){
+  cfs[1] <- cfs[1] - cfs[2] * mean(svar)
+  cfs
+}
+fig_dat <- sc_dat
+figmod_dat <- sc_dat
+contrasts(figmod_dat$Habitat) <- contr.sum
+contrasts(figmod_dat$Growth_form) <- contr.sum
+figmod_dat$BXst <- centr(sqrt(sc_dat$Bark_xylem_ratio))
+figmod_dat$RPCst <- centr(log(sc_dat$RPC))
+figmod_dat$LCCst <- centr(log(sc_dat$LCC))
+figmod_dat$LPCst <- centr(log(sc_dat$LPC))
+figmod_dat$RNCst <- centr(log(sc_dat$RNC))
+figmod_dat$Growthst <- centr(log(sc_dat$Growth))
+mod_lon1 <- phylolm(log(Longevity) ~ Habitat, 
+  data = figmod_dat, phy = sc_tree, model = "lambda")
+mod_lon2 <- phylolm(log(Longevity) ~ Habitat + Growth_form, 
+  data = figmod_dat, phy = sc_tree, model = "lambda")
+mod_lon3 <- phylolm(log(Longevity) ~ Habitat + Growth_form + 
+  BXst + RPCst + LCCst + LPCst + RNCst + Growthst, 
+  data = figmod_dat, phy = sc_tree, model = "lambda")
+
+figmod_dat$Moisturest <- centr(sc_dat$Moisture)
+figmod_dat$Elevation_optimast <- centr(sc_dat$Elevation_optima)
+figmod_dat$Heightst <- centr(sqrt(sc_dat$Plant_height))
+figmod_dat$LNCst <- centr(log(sc_dat$LNC))
+figmod_dat$RNCst <- centr(log(sc_dat$RNC))
+figmod_dat$d15Nst <- centr(sc_dat$d15N)
+mod_gro1 <- phylolm(log(Growth) ~ Moisturest + Habitat + 
+  Elevation_optimast, 
+  data = figmod_dat, phy = sc_tree, model = "lambda")
+mod_gro2 <- phylolm(log(Growth) ~ Moisturest + Habitat + 
+  Elevation_optimast + Growth_form + Heightst, 
+  data = figmod_dat, phy = sc_tree, model = "lambda")
+mod_gro3 <- phylolm(log(Growth) ~ Moisturest + Habitat + 
+  Elevation_optimast + Growth_form + Heightst + BXst + LNCst +
+  RNCst + d15Nst + LCCst, 
+  data = figmod_dat, phy = sc_tree, model = "lambda")
+
+# pdf("figures/Fig5_longevity.pdf", height = 14, width = 7)
+# png("figures/Fig5_longevity.png", height = 480*10*2, width = 480*10, res = 72*15)
+par(mfrow = c(4,2))
+# Longevity - habitat
+aux <- tapply(log(fig_dat$Longevity), fig_dat$Habitat, mean)
+fig_dat$Habitat <- factor(fig_dat$Habitat, levels = names(aux)[order(aux)])
+par(mai = c(0.9,0.6,0.1,0.1))
+plot(log(Longevity) ~ Habitat, data = fig_dat, varwidth = TRUE, 
+  outline = FALSE, xlab = "", ylab = "Longevity [years]", axes = FALSE,
+  ylim = range(log(Longevity)), col = brewer.pal(7, "Dark2")[match(names(aux), sort(names(aux)))])
+box(bty = "l")
+axis(1, at = seq_along(levels(fig_dat$Habitat)), 
+  labels = levels(fig_dat$Habitat), las = 2)
+axis(2, labels = c(1,3,10,30,100), at = log(c(1,3,10,30,100)))
+points(jitter(as.numeric(fig_dat$Habitat)), log(fig_dat$Longevity), cex = 0.7)
+axis(1, labels = "Habitat", at = 4, line = 4.5, tick = FALSE)
+
+# Longevity - growth form
+aux <- tapply(log(fig_dat$Longevity), fig_dat$Growth_form, mean)
+fig_dat$Growth_form <- factor(fig_dat$Growth_form, levels = names(aux)[order(aux)])
+par(mai = c(0.9,0.6,0.1,0.1))
+plot(log(Longevity) ~ Growth_form, data = fig_dat, varwidth = TRUE, 
+  outline = FALSE, xlab = "", ylab = "Longevity [years]", axes = FALSE,
+  ylim = range(log(Longevity)), col = brewer.pal(7, "Set2")[match(names(aux), sort(names(aux)))])
+box(bty = "l")
+axis(1, at = seq_along(levels(fig_dat$Growth_form)), 
+  labels = levels(fig_dat$Growth_form), las = 2)
+axis(2, labels = c(1,3,10,30,100), at = log(c(1,3,10,30,100)))
+points(jitter(as.numeric(fig_dat$Growth_form)), log(fig_dat$Longevity), 
+  cex = 0.7)
+axis(1, labels = "Growth form", at = 4, line = 4.5, tick = FALSE)
+
+# Longevity - LCC
+par(mai = c(0.6,0.6,0.1,0.1))
+plot(log(Longevity) ~ log(LCC), data = fig_dat, axes = FALSE,
+  xlab = "Leaf carbon content [%]", ylab = "Longevity [years]")
+box(bty = "l")
+axis(1, labels = c(5:9*5), at = log(c(5:9*5)))
+axis(2, labels = c(1,3,10,30,100), at = log(c(1,3,10,30,100)))
+aux <- range(log(fig_dat$LCC))
+xx <- seq(aux[1], aux[2], length.out = 100)
+cf_aux <- c(coef(mod_lon3)[1], coef(mod_lon3)["LCCst"])
+cf <- recalc_int(cf_aux, log(sc_dat$LCC))
+lines(xx, cf[1] + xx * cf[2], lwd = 2)
+
+# Longevity - LPC
+par(mai = c(0.6,0.6,0.1,0.1))
+plot(log(Longevity) ~ log(LPC), data = fig_dat, axes = FALSE,
+  xlab = "Leaf phosphorus content [%]", ylab = "Longevity [years]")
+box(bty = "l")
+axis(1, labels = c(0.1,0.2,0.3,0.5), at = log(c(0.1,0.2,0.3,0.5)))
+axis(2, labels = c(1,3,10,30,100), at = log(c(1,3,10,30,100)))
+aux <- range(log(fig_dat$LPC))
+xx <- seq(aux[1], aux[2], length.out = 100)
+cf_aux <- c(coef(mod_lon3)[1], coef(mod_lon3)["LPCst"])
+cf <- recalc_int(cf_aux, log(sc_dat$LPC))
+lines(xx, cf[1] + xx * cf[2], lwd = 2)
+
+# Longevity - RPC
+par(mai = c(0.6,0.6,0.1,0.1))
+plot(log(Longevity) ~ log(RPC), data = fig_dat, axes = FALSE,
+  xlab = "Root phosphorus content [%]", ylab = "Longevity [years]")
+box(bty = "l")
+axis(1, labels = c(0.03,0.05,0.1,0.2,0.3), at = log(c(0.03,0.05,0.1,0.2,0.3)))
+axis(2, labels = c(1,3,10,30,100), at = log(c(1,3,10,30,100)))
+aux <- range(log(fig_dat$RPC))
+xx <- seq(aux[1], aux[2], length.out = 100)
+cf_aux <- c(coef(mod_lon3)[1], coef(mod_lon3)["RPCst"])
+cf <- recalc_int(cf_aux, log(sc_dat$RPC))
+lines(xx, cf[1] + xx * cf[2], lwd = 2)
+
+# Longevity - RNC
+par(mai = c(0.6,0.6,0.1,0.1))
+plot(log(Longevity) ~ log(RNC), data = fig_dat, axes = FALSE,
+  xlab = "Root nitrogen content [%]", ylab = "Longevity [years]")
+box(bty = "l")
+axis(1, labels = c(0.3, 0.5, 1, 2), at = log(c(0.3,0.5,1,2)))
+axis(2, labels = c(1,3,10,30,100), at = log(c(1,3,10,30,100)))
+aux <- range(log(fig_dat$RNC))
+xx <- seq(aux[1], aux[2], length.out = 100)
+cf_aux <- c(coef(mod_lon3)[1], coef(mod_lon3)["RNCst"])
+cf <- recalc_int(cf_aux, log(sc_dat$RNC))
+lines(xx, cf[1] + xx * cf[2], lwd = 2)
+
+# Longevity - Bark-xylem ratio
+par(mai = c(0.6,0.6,0.1,0.1))
+plot(log(Longevity) ~ sqrt(Bark_xylem_ratio), data = fig_dat,  
+  xlab = "Bark-xylem ratio", ylab = "Longevity [years]", axes = FALSE)
+box(bty = "l")
+axis(1, labels = c(0.1,0.5,1,2,3,5), at = sqrt(c(0.1,0.5,1,2,3,5)))
+axis(2, labels = c(1,3,10,30,100), at = log(c(1,3,10,30,100)))
+aux <- range(sqrt(fig_dat$Bark_xylem_ratio))
+xx <- seq(aux[1], aux[2], length.out = 100)
+cf_aux <- c(coef(mod_lon3)[1], coef(mod_lon3)["BXst"])
+cf <- recalc_int(cf_aux, sqrt(sc_dat$Bark_xylem_ratio))
+lines(xx, cf[1] + xx * cf[2], lwd = 2)
+
+# Longevity - Growth
+par(mai = c(0.6,0.6,0.1,0.1))
+plot(log(Longevity) ~ log(Growth), data = fig_dat, axes = FALSE,
+  xlab = "Radial growth [mm]", ylab = "Longevity [years]")
+box(bty = "l")
+axis(1, labels = c(0.03,0.1,0.3,1,3), at = log(c(0.03,0.1,0.3,1,3)*1000))
+axis(2, labels = c(1,3,10,30,100), at = log(c(1,3,10,30,100)))
+aux <- range(log(fig_dat$Growth))
+xx <- seq(aux[1], aux[2], length.out = 100)
+cf_aux <- c(coef(mod_lon3)[1], coef(mod_lon3)["Growthst"])
+cf <- recalc_int(cf_aux, log(sc_dat$Growth))
+lines(xx, cf[1] + xx * cf[2], lwd = 2)
+
+#________________________________
+# Figure 3 and 4 - phylogeny
+
+library(RColorBrewer)
+
+bin <- function(x) round((x - min(x)) / max(x - min(x)), 1) * 10 
+dat_f <- data.frame(L = bin(log(sc_dat$Longevity)), 
+  E = 0, 
+  H = as.numeric(sc_dat$Habitat),
+  G = as.numeric(sc_dat$Growth_form), row.names = sc_dat$Species)
+cols <- list(L = setNames(rev(heat.colors(11)), 0:10), 
+  E = setNames("white", 0), 
+  H = setNames(brewer.pal(7, "Dark2"), 1:7),
+  G = setNames(brewer.pal(7, "Set2"), 1:7))
+class_f <- read.csv("data/taxons.csv")$Family
+class_f[!class_f %in% names(sort(table(class_f), decreasing = TRUE)[1:18])] <- NA
+class_ft <- class_f[match(sc_tree$tip.label, sc_dat$Species)]
+
+# pdf("figures/Fig3_phylo.pdf")
+# png("figures/Fig3_phylo.png", height = 480*10, width = 480*10, res = 72*10)
+par(mai = c(1,0,0,0))
+trait.plot2(sc_tree, dat_f, cols, legend = FALSE, 
+  class = class_ft, margin = 1.4, cex.lab = 0.8, g_lwd = 3, w = 1/15)
+par(new = TRUE, mai = c(0,0,0,0))
+plot(0:1,0:1, ann = FALSE, axes = FALSE, type = "n")
+legend("bottomleft", title = "Habitat", fill = cols$H, legend = levels(sc_dat$Habitat), bty = "n")
+legend("bottomright", title = "Growth form", fill = cols$G, legend = levels(sc_dat$Growth_form), bty = "n")
+rect(seq(0.4,0.6,length.out = 11),0.05,seq(0.4,0.6,length.out = 11) + 0.02,0.08, col = rev(heat.colors(11)), lwd = -1)
+rect(0.4,0.05,0.62,0.08)
+text(0.51, 0.08, "Longevity", pos = 3)
+text(c(0.4,0.62), 0.05, c("Low", "High"), pos = 1)
+
+dat_f2 <- data.frame(L = bin(log(sc_dat$Longevity)), 
+  E = 0, 
+  LCC = bin(log(sc_dat$LCC)),
+  LPC = bin(log(sc_dat$LPC)),
+  RPC = bin(log(sc_dat$RPC)),
+  RNC = bin(log(sc_dat$RNC)),
+  BX = bin(sqrt(sc_dat$Bark_xylem_ratio)),
+  GR = bin(log(sc_dat$Growth)), row.names = sc_dat$Species)
+colsGrad <- setNames(brewer.pal(11, "BrBG"), 0:10)
+cols2 <- list(L = setNames(rev(heat.colors(11)), 0:10), 
+  E = setNames("white", 0), 
+  LCC = colsGrad,
+  LPC = colsGrad,
+  RPC = colsGrad,
+  RNC = colsGrad,
+  BX = colsGrad,
+  GR = colsGrad)
+
+# pdf("figures/Fig2_phylo.pdf")
+# png("figures/Fig2_phylo.png", height = 480*10, width = 480*10, res = 72*10)
+par(mai = c(1,0,0,0))
+trait.plot2(sc_tree, dat_f2, cols2, legend = FALSE, 
+  class = class_ft, margin = 1.4, cex.lab = 0.8, g_lwd = 3, w = 1/15)
+par(new = TRUE, mai = c(0,0,0,0))
+plot(0:1,0:1, ann = FALSE, axes = FALSE, type = "n")
+rect(seq(0.2,0.4,length.out = 11),0.05,seq(0.2,0.4,length.out = 11) + 0.02,0.08, col = rev(heat.colors(11)), lwd = -1)
+rect(0.2,0.05,0.42,0.08)
+text(0.31, 0.08, "Longevity", pos = 3)
+text(c(0.2,0.42), 0.05, c("Low", "High"), pos = 1)
+rect(seq(0.6,0.8,length.out = 11),0.05,seq(0.6,0.8,length.out = 11) + 0.02,0.08, col = colsGrad, lwd = -1)
+rect(0.6,0.05,0.82,0.08)
+text(0.71, 0.08, "Functional traits", pos = 3)
+text(c(0.6,0.82), 0.05, c("Low", "High"), pos = 1)
+
+# figure S1
+# Growth form ~ elevation
+dat_S1 <- sc_dat
+aux <- tapply(dat_S1$Elevation_optima, dat_S1$Growth_form, mean)
+dat_S1$Growth_form <- factor(dat_S1$Growth_form, levels = names(sort(aux)))
+
+# png("figures/FigS1_elevGF.png", height = 480*10, width = 480*10, res = 72*10)
+par(mai = c(1.2,1,0.1,0.1))
+boxplot(Elevation_optima ~ Growth_form, data = dat_S1, las = 2, xlab = "", ylab = "", col = brewer.pal(7, "Set2")[order(aux)], varwidth = TRUE, outline = FALSE)
+points(jitter(as.numeric(dat_S1$Growth_form)), dat_S1$Elevation_optima)
+axis(2, at = 4250, labels = "Elevation optima (m.a.s.l.)", tick = FALSE, line = 3)
+
+#_
