@@ -252,7 +252,7 @@ lines(xx, cf[1] + xx * cf[2], lwd = 2)
 
 #________________________________
 # Figure 3 and 4 - phylogeny
-
+source("R/function_traitplot2.R")
 library(RColorBrewer)
 
 bin <- function(x) round((x - min(x)) / max(x - min(x)), 1) * 10 
