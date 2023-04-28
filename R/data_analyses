@@ -328,4 +328,31 @@ boxplot(Elevation_optima ~ Growth_form, data = dat_S1, las = 2, xlab = "", ylab 
 points(jitter(as.numeric(dat_S1$Growth_form)), dat_S1$Elevation_optima)
 axis(2, at = 4250, labels = "Elevation optima (m.a.s.l.)", tick = FALSE, line = 3)
 
+# figure S2
+# PCA
+library(phytools)
+dat_aux <- sc_dat[, -c(1, 5, 9, 10, 20)]
+dat_tr <- dat_aux
+dat_tr[, c("Plant_height", "Bark_xylem_ratio", "Mechanical_tissue")] <- sqrt(dat_aux[, c("Plant_height", "Bark_xylem_ratio", "Mechanical_tissue")])
+sel_log <- c("LNC", "LPC", "RNC", "RPC", "LCC", "Growth")
+dat_tr[, sel_log] <- log(dat_tr[, sel_log])
+dat_pca <- apply(dat_tr, 2, function(x) (x - mean(x)) / sd(x))
+
+mod <- phyl.pca(sc_tree, dat_pca, method = "lambda") 
+var_names <- gsub("_", " ", rownames(mod$Evec))
+var_names[c(1,16)] <- c("Bark-xylem ratio", "Radial growth")
+exp_var <- round(sqrt(diag(mod$Eval))/sum(sqrt(diag(mod$Eval))) * 100, 2)
+
+# png("figures/FigS2_pca.png", height = 480*10, width = 480*10, res = 72*10)
+plot(mod$S[, 1], mod$S[, 2], type = "n", 
+  xlab = paste0("PCA 1 (", exp_var[1], "%)"), 
+  ylab = paste0("PCA 2 (", exp_var[2], "%)"))
+abline(h = 0, lty = 2)
+abline(v = 0, lty = 2)
+points(mod$S[, 1], mod$S[, 2], col = "grey")
+arrows(0,0,mod$Evec[, 1]*7, mod$Evec[, 2]*7, length = 0.1, col = "red")
+text(mod$Evec[, 1]*7, mod$Evec[, 2]*7, var_names, col = "red",
+  pos = c(4,1,4,3,2,1,1,2,4,1,1,1,1,3,1,1))
+text(-3,2, paste("Lambda =", round(mod$lambda, 2)), col = "red")
+
 #_
